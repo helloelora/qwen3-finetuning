@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+key.txt
+*.key
+
+# Model weights & checkpoints
+outputs/
+outputs_*/
+lora_model*/
+*.safetensors
+*.bin
+*.gguf
+
+# Data (large files — keep JSONL samples only)
+*.csv
+*.tsv
+
+# Logs
+logs/
+*.log
+*.err
+slurm-*.out
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# HPC cache
+.apptainer_cache/
+.cache/
+mytmp*/
+
+# Singularity/Apptainer images
+*.sif
