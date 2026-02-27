@@ -18,7 +18,21 @@ Training: enable_thinking=True (model sees <think>...</think> + answer, but assi
 Eval:     enable_thinking=True, temperature=0.0 (greedy, deterministic)
 """
 
-import json, re, gc, os, time
+import os, sys
+
+# ─── RUCHE HPC Environment Setup ────────────────────────────────
+os.environ["HF_HOME"] = "/tmp/hf_cache"
+os.environ["TRANSFORMERS_CACHE"] = "/tmp/hf_cache/transformers"
+os.environ["HF_HUB_CACHE"] = "/tmp/hf_cache/hub"
+os.environ["HUGGINGFACE_HUB_CACHE"] = "/tmp/hf_cache/hub"
+os.environ["TORCHINDUCTOR_CACHE_DIR"] = "/tmp/torchinductor_cache"
+os.environ["TMPDIR"] = "/tmp"
+os.makedirs("/tmp/torchinductor_cache", exist_ok=True)
+os.makedirs("/tmp/hf_cache/hub", exist_ok=True)
+os.makedirs("/tmp/hf_cache/transformers", exist_ok=True)
+# ─────────────────────────────────────────────────────────────────
+
+import json, re, gc, time
 import numpy as np
 import torch
 from datetime import datetime
@@ -34,7 +48,7 @@ from openai import OpenAI
 SEED = 42
 MODEL_NAME = "unsloth/Qwen3-14B-unsloth-bnb-4bit"
 MAX_SEQ_LEN = 4096
-DATASET_PATH = "dataset_alex.json"
+DATASET_PATH = "/gpfs/workdir/drouilheel/fine_tuning_qwen/dataset_alex.json"
 
 # LoRA — same strong config as best variant
 LORA_R = 64

@@ -17,7 +17,20 @@ Configuration:
     - Dataset: dataset_reliability.jsonl (53 curated samples)
 """
 
-import os
+import os, sys
+
+# ─── RUCHE HPC Environment Setup ────────────────────────────────
+os.environ["HF_HOME"] = "/tmp/hf_cache"
+os.environ["TRANSFORMERS_CACHE"] = "/tmp/hf_cache/transformers"
+os.environ["HF_HUB_CACHE"] = "/tmp/hf_cache/hub"
+os.environ["HUGGINGFACE_HUB_CACHE"] = "/tmp/hf_cache/hub"
+os.environ["TORCHINDUCTOR_CACHE_DIR"] = "/tmp/torchinductor_cache"
+os.environ["TMPDIR"] = "/tmp"
+os.makedirs("/tmp/torchinductor_cache", exist_ok=True)
+os.makedirs("/tmp/hf_cache/hub", exist_ok=True)
+os.makedirs("/tmp/hf_cache/transformers", exist_ok=True)
+# ─────────────────────────────────────────────────────────────────
+
 import gc
 import json
 import re
@@ -34,7 +47,7 @@ from unsloth import FastLanguageModel
 
 MODEL_NAME = "unsloth/Qwen3-14B-unsloth-bnb-4bit"
 MAX_SEQ_LEN = 8192
-DATASET_PATH = "dataset_alex.json"
+DATASET_PATH = "/gpfs/workdir/drouilheel/fine_tuning_qwen/dataset_alex.json"
 
 EVAL_THINKING_MODE = True
 EVAL_TEMPERATURE = 0.0          # Greedy — same as Strong LoRA
