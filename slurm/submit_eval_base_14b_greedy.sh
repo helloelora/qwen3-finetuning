@@ -32,6 +32,6 @@ apptainer exec \
   --bind $WORKDIR:$WORKDIR:rw \
   --bind $WORKDIR/mytmp_eval_14b_greedy:/tmp \
   $WORKDIR/unsloth_latest.sif \
-  python $WORKDIR/fine_tuning_qwen/evaluation/eval_base_14b_greedy.py
+  python $WORKDIR/fine_tuning_qwen/eval_base_14b_greedy.py
 
 echo "=== Job finished at $(date) ==="

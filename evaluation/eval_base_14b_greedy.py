@@ -34,7 +34,7 @@ from unsloth import FastLanguageModel
 
 MODEL_NAME = "unsloth/Qwen3-14B-unsloth-bnb-4bit"
 MAX_SEQ_LEN = 8192
-DATASET_PATH = "dataset_reliability.jsonl"
+DATASET_PATH = "dataset_alex.json"
 
 EVAL_THINKING_MODE = True
 EVAL_TEMPERATURE = 0.0          # Greedy — same as Strong LoRA

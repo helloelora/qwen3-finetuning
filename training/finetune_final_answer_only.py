@@ -34,7 +34,7 @@ from openai import OpenAI
 SEED = 42
 MODEL_NAME = "unsloth/Qwen3-14B-unsloth-bnb-4bit"
 MAX_SEQ_LEN = 4096
-DATASET_PATH = "dataset_reliability.jsonl"
+DATASET_PATH = "dataset_alex.json"
 
 # LoRA — same strong config as best variant
 LORA_R = 64

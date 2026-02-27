@@ -34,6 +34,6 @@ apptainer exec \
   --bind $WORKDIR:$WORKDIR:rw \
   --bind $WORKDIR/mytmp_final_answer_only:/tmp \
   $WORKDIR/unsloth_latest.sif \
-  python $WORKDIR/fine_tuning_qwen/training/finetune_final_answer_only.py
+  python $WORKDIR/fine_tuning_qwen/finetune_final_answer_only.py
 
 echo "=== Job finished at $(date) ==="
