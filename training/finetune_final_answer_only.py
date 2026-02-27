@@ -1,134 +1,119 @@
 """
-Baseline fine-tuning: Qwen3-14B with LoRA (r=16, alpha=16)
+Qwen3-14B Fine-tuning — Final Answer Only (Alex's idea)
+========================================================
+Fine-tunes ONLY on the final answer (no reasoning at all).
+The model keeps its native <think> process entirely intact.
 
-Fine-tunes Qwen3-14B-4bit on reliability engineering exam questions
-using 5-fold cross-validation with an LLM judge for evaluation.
+Hypothesis: By only teaching the model WHAT to answer (not HOW to reason),
+we preserve its native chain-of-thought while steering it toward correct results.
 
-Configuration:
-    - Model: Qwen3-14B (4-bit quantized via Unsloth)
-    - LoRA: r=16, alpha=16
-    - Training: 2 epochs, lr=1e-5, cosine scheduler
-    - Eval: temp=0.6 sampling, 16K max tokens
-    - Judge: Claude 3.5 Sonnet via OpenRouter
-    - Data format: <think>reasoning</think> + answer (native thinking)
+Key difference from other variants:
+- Strong LoRA:    trains on <think>{reasoning}</think> + answer  → overwrites reasoning
+- Answer-only:    trains on {reasoning} + answer as flat text    → overwrites reasoning
+- THIS SCRIPT:    trains on answer ONLY                          → preserves native thinking
 
-Result: 68.18% ± 8.61% (5-fold CV on 53 samples)
+Config: r=64, alpha=64, 3 epochs, greedy eval (same as Strong LoRA)
+Training: enable_thinking=True (model sees <think>...</think> + answer, but assistant
+          content is ONLY the final answer — model fills in thinking on its own)
+Eval:     enable_thinking=True, temperature=0.0 (greedy, deterministic)
 """
 
-import os
-import gc
-import json
-import random
-import re
-import time
+import json, re, gc, os, time
 import numpy as np
 import torch
-from tqdm import tqdm
 from datetime import datetime
-from openai import OpenAI
-from sklearn.model_selection import KFold
-from datasets import load_dataset
+from tqdm import tqdm
 from unsloth import FastLanguageModel
 from trl import SFTTrainer, SFTConfig
+from sklearn.model_selection import KFold
+from datasets import load_dataset
+from openai import OpenAI
 
-# Configuration
+# ─── Configuration ───────────────────────────────────────────────
 
-SEED = 3407
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
-
+SEED = 42
 MODEL_NAME = "unsloth/Qwen3-14B-unsloth-bnb-4bit"
-MAX_SEQ_LEN = 8192
-DATASET_PATH = "dataset_alex.json"
+MAX_SEQ_LEN = 4096
+DATASET_PATH = "dataset_reliability.jsonl"
 
-# Evaluation configuration
+# LoRA — same strong config as best variant
+LORA_R = 64
+LORA_ALPHA = 64
+NUM_EPOCHS = 3
+LEARNING_RATE = 1e-5
+
+# Training thinking mode — True so the model sees the <think> structure
+# but assistant content is ONLY the final answer
+TRAIN_THINKING_MODE = True
+
+# Eval — greedy decoding, native thinking enabled
 EVAL_THINKING_MODE = True
-EVAL_MAX_NEW_TOKENS = 16384
-EVAL_TEMPERATURE = 0.6
-# change the temp to 0 greedy
+EVAL_TEMPERATURE = 0.0
+EVAL_MAX_NEW_TOKENS = 8192
 EVAL_MAX_SAMPLES_PER_FOLD = None
 
-# Judge configuration (OpenRouter)
-JUDGE_API_KEY = os.environ["OPENROUTER_API_KEY"]
-JUDGE_BASE_URL = "https://openrouter.ai/api/v1"
+# Judge
 JUDGE_MODEL = "anthropic/claude-3.5-sonnet"
 
-client = OpenAI(
-    api_key=JUDGE_API_KEY,
-    base_url=JUDGE_BASE_URL,
-    default_headers={
-        "HTTP-Referer": "https://github.com/helloelora",
-        "X-Title": "Reliability-Eval",
-    },
+SYSTEM_PROMPT = (
+    "You are a Reliability Engineering expert. "
+    "Solve the given problem step by step, then provide a clear final answer."
 )
 
-SYSTEM_PROMPT = """You are a Reliability Engineering Expert.
-Solve the user's problem step-by-step with rigorous mathematical reasoning.
-Use LaTeX for mathematical formulas.
-Be concise: focus on the key calculation steps, avoid repeating the question or adding unnecessary preamble.
-Always conclude with a clearly stated final answer including numerical values and units when applicable."""
+# OpenRouter API
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+)
 
 
-# Data preparation
+# ─── Data preparation ───────────────────────────────────────────
 
 
-def build_training_texts(examples, tokenizer, rng=None, log_tokens=False):
+def build_training_texts(examples, tokenizer, log_tokens=False):
     """
-    Format training samples using Qwen3's native thinking mode.
-
-    Each sample becomes:
-        <|im_start|>assistant
-        <think>{reasoning}</think>
-        **Final Answer:** {answer}
-        <|im_end|>
+    Build training texts with ONLY the final answer as assistant content.
+    
+    The model's native <think> process is preserved because we don't provide
+    any reasoning — only the correct answer. During training with
+    enable_thinking=True, the template includes the <think>...</think> structure,
+    but the assistant's content is just the answer.
     """
-    if rng is None:
-        rng = random.Random(SEED)
-
-    questions = examples["question"]
-    reasonings = examples["reasoning"]
-    answers = examples["answer"]
     texts = []
-    token_lengths = []
+    for q, a in zip(examples["question"], examples["answer"]):
+        # Assistant content = ONLY the final answer, no reasoning at all
+        assistant_content = f"**Final Answer:** {a}"
 
-    for q, r, a in zip(questions, reasonings, answers):
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": q},
-            {"role": "assistant", "content": f"<think>\n{r}\n</think>\n\n**Final Answer:** {a}"},
+            {"role": "assistant", "content": assistant_content},
         ]
+
         text = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=False,
-            enable_thinking=True,
+            messages, tokenize=False, add_generation_prompt=False,
+            enable_thinking=TRAIN_THINKING_MODE,
         )
         texts.append(text)
-        token_lengths.append(len(tokenizer.encode(text)))
 
-    if log_tokens and token_lengths:
-        print(f"  Token stats: min={min(token_lengths)}, max={max(token_lengths)}, "
-              f"mean={np.mean(token_lengths):.0f}, "
-              f"over {MAX_SEQ_LEN}: {sum(1 for t in token_lengths if t > MAX_SEQ_LEN)}")
+    if log_tokens and texts:
+        tokens = tokenizer(texts[0], return_tensors="pt")
+        print(f"[Final-Answer-Only] Sample token count: {tokens['input_ids'].shape[1]}")
+        print(f"[Final-Answer-Only] Sample text preview:\n{texts[0][:500]}...")
 
     return {"text": texts}
 
 
-# Answer extraction
+# ─── Answer extraction ───────────────────────────────────────────
 
 
 def extract_final_answer(text):
     """Extract the final answer from a Qwen3 response, handling <think> blocks."""
-    # Remove complete <think>...</think> blocks
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
-    # Handle unclosed <think> blocks (model ran out of tokens mid-reasoning)
     if "<think>" in cleaned:
         cleaned = re.sub(r"<think>.*$", "", cleaned, flags=re.DOTALL).strip()
 
-    # If nothing left, try to salvage content
     if not cleaned:
         after_think = re.split(r"</think>", text)
         if len(after_think) > 1:
@@ -165,7 +150,6 @@ def _truncate_repetitions(text, max_repeats=3):
     result = "\n".join(result_lines)
     result = re.sub(r"(\b\w{3,30}\b)(\s+\1){4,}", r"\1", result)
 
-    # Keep only the first "**Final Answer:**"
     parts = result.split("**Final Answer:**")
     if len(parts) > 2:
         result = parts[0] + "**Final Answer:**" + parts[1]
@@ -173,12 +157,12 @@ def _truncate_repetitions(text, max_repeats=3):
     return result.strip()
 
 
-# Generation
+# ─── Generation ──────────────────────────────────────────────────
 
 
 @torch.inference_mode()
 def generate_answer(model, tokenizer, question):
-    """Generate an answer using Qwen3 with native thinking mode."""
+    """Generate an answer using greedy decoding (deterministic)."""
     FastLanguageModel.for_inference(model)
 
     messages = [
@@ -186,24 +170,31 @@ def generate_answer(model, tokenizer, question):
         {"role": "user", "content": question},
     ]
     input_ids = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-        enable_thinking=EVAL_THINKING_MODE,
-        return_tensors="pt",
+        messages, tokenize=True, add_generation_prompt=True,
+        enable_thinking=EVAL_THINKING_MODE, return_tensors="pt",
     ).to("cuda")
 
-    gen_kwargs = dict(
-        max_new_tokens=EVAL_MAX_NEW_TOKENS,
-        use_cache=True,
-        do_sample=True,
-        temperature=EVAL_TEMPERATURE,
-        top_p=0.95,
-        top_k=20,
-        min_p=0.0,
-        repetition_penalty=1.15,
-        no_repeat_ngram_size=10,
-    )
+    # Greedy decoding for deterministic evaluation
+    if EVAL_TEMPERATURE == 0.0:
+        gen_kwargs = dict(
+            max_new_tokens=EVAL_MAX_NEW_TOKENS,
+            use_cache=True,
+            do_sample=False,
+            repetition_penalty=1.15,
+            no_repeat_ngram_size=10,
+        )
+    else:
+        gen_kwargs = dict(
+            max_new_tokens=EVAL_MAX_NEW_TOKENS,
+            use_cache=True,
+            do_sample=True,
+            temperature=EVAL_TEMPERATURE,
+            top_p=0.95,
+            top_k=20,
+            min_p=0.0,
+            repetition_penalty=1.15,
+            no_repeat_ngram_size=10,
+        )
 
     outputs = model.generate(input_ids, **gen_kwargs)
     output_ids = outputs[0][input_ids.shape[1]:].tolist()
@@ -217,7 +208,7 @@ def generate_answer(model, tokenizer, question):
     return answer, n_tokens, had_thinking, raw_clean
 
 
-# LLM Judge
+# ─── LLM Judge ───────────────────────────────────────────────────
 
 
 def judge_single(sample, student_answer):
@@ -282,7 +273,6 @@ GRADING RULES:
 def evaluate_fold(model, tokenizer, dataset, fold_num):
     """Evaluate a validation fold and return accuracy + detailed results."""
     n = len(dataset) if EVAL_MAX_SAMPLES_PER_FOLD is None else min(EVAL_MAX_SAMPLES_PER_FOLD, len(dataset))
-
     detailed = []
     correct = 0
     token_counts = []
@@ -300,14 +290,14 @@ def evaluate_fold(model, tokenizer, dataset, fold_num):
     print(f"  Fold {fold_num + 1}: {accuracy * 100:.2f}% ({correct}/{n}), "
           f"tokens: mean={np.mean(token_counts):.0f}, max={max(token_counts)}")
 
-    out_path = f"eval_details_baseline_fold_{fold_num + 1}.json"
+    out_path = f"eval_details_final_answer_only_fold_{fold_num + 1}.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(detailed, f, indent=2, ensure_ascii=False)
 
     return accuracy, detailed
 
 
-# Memory management
+# ─── Memory management ───────────────────────────────────────────
 
 
 def clear_cuda():
@@ -316,7 +306,7 @@ def clear_cuda():
     torch.cuda.synchronize()
 
 
-# Main: 5-fold cross-validation
+# ─── Main: 5-fold cross-validation ──────────────────────────────
 
 if __name__ == "__main__":
     print(f"Loading dataset from {DATASET_PATH}...")
@@ -328,12 +318,11 @@ if __name__ == "__main__":
     fold_accuracies = []
     all_results = []
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = f"evaluation_results_baseline_{run_timestamp}.json"
+    results_file = f"evaluation_results_final_answer_only_{run_timestamp}.json"
 
     for fold, (train_idx, val_idx) in enumerate(kf.split(range(len(full_dataset)))):
         print(f"FOLD {fold + 1}/{N_FOLDS} — Train: {len(train_idx)}, Val: {len(val_idx)}")
 
-        # Cleanup previous fold
         for name in ["model", "tokenizer", "trainer"]:
             if name in dir():
                 exec(f"del {name}")
@@ -344,7 +333,7 @@ if __name__ == "__main__":
             model_name=MODEL_NAME, max_seq_length=MAX_SEQ_LEN, load_in_4bit=True,
         )
 
-        # Add LoRA adapters
+        # Add LoRA — same strong config as best variant
         model = FastLanguageModel.get_peft_model(
             model,
             r=LORA_R,
@@ -355,7 +344,7 @@ if __name__ == "__main__":
             random_state=SEED,
         )
 
-        # Prepare training data
+        # Prepare training data — ONLY final answers, no reasoning
         train_ds = full_dataset.select(train_idx)
         train_ds = train_ds.map(
             lambda x: build_training_texts(x, tokenizer, log_tokens=(fold == 0)),
@@ -363,7 +352,7 @@ if __name__ == "__main__":
             remove_columns=train_ds.column_names,
         )
 
-        # Train
+        # Train — 3 epochs
         trainer = SFTTrainer(
             model=model,
             processing_class=tokenizer,
@@ -381,7 +370,7 @@ if __name__ == "__main__":
                 lr_scheduler_type="cosine",
                 seed=SEED,
                 logging_steps=5,
-                output_dir=f"outputs_baseline_fold_{fold}",
+                output_dir=f"outputs_final_answer_only_fold_{fold}",
                 save_strategy="no",
                 report_to="none",
             ),
@@ -397,12 +386,14 @@ if __name__ == "__main__":
         # Save incremental results
         json_results = {
             "metadata": {
-                "variant": "baseline",
+                "variant": "final_answer_only",
+                "description": "Fine-tune on final answer only — no reasoning. Model preserves native <think> process.",
                 "model": MODEL_NAME,
                 "lora_r": LORA_R,
                 "lora_alpha": LORA_ALPHA,
                 "num_epochs": NUM_EPOCHS,
                 "learning_rate": LEARNING_RATE,
+                "train_thinking_mode": TRAIN_THINKING_MODE,
                 "eval_temperature": EVAL_TEMPERATURE,
                 "judge_model": JUDGE_MODEL,
                 "n_folds": N_FOLDS,
@@ -425,6 +416,6 @@ if __name__ == "__main__":
         clear_cuda()
 
     # Final summary
-    print(f"BASELINE COMPLETE — Mean: {np.mean(fold_accuracies):.2f}% ± {np.std(fold_accuracies):.2f}%")
+    print(f"FINAL ANSWER ONLY COMPLETE — Mean: {np.mean(fold_accuracies):.2f}% ± {np.std(fold_accuracies):.2f}%")
     print(f"Fold accuracies: {[f'{a:.2f}%' for a in fold_accuracies]}")
     print(f"Results saved to: {results_file}")

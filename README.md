@@ -10,17 +10,17 @@ All final experiments use **5-fold cross-validation** on a curated 53-sample dat
 
 ### Summary
 
-| Configuration | Model | LoRA rank | Epochs | Eval temp | Accuracy |
-|---|---|---|---|---|---|
-| Base (no FT) | Qwen3-14B | — | — | 0.6 | 69.90% (on 103 samples) |
-| Base (no FT) | Qwen3-8B | — | — | 0.6 | 62.26% (on 53 samples) |
-| Baseline FT | Qwen3-14B | r=16 | 2 | 0.6 | 68.18% ± 8.61% |
-| **Strong LoRA** | **Qwen3-14B** | **r=64** | **3** | **0 (greedy)** | **71.64% ± 5.90%** |
-| Answer-only | Qwen3-14B | r=16 | 2 | 0.6 | 70.18% ± 16.04% |
-| 8B variant | Qwen3-8B | r=16 | 2 | 0.6 | 64.00% ± 9.73% |
-| Strong LoRA ext. | Qwen3-14B | r=64 | 3 | 0 (greedy) | 25.38% ± 12.62% |
-
-> Dataset composition: **`dataset_alex`** (53 curated samples from one textbook) is used for all experiments except the extended variant, which uses **`dataset_alex_extended`** (53 + 30 augmented by a colleague via `cross_model_verified.jsonl` + 17 from a second textbook via `data2.jsonl` = 100 samples).
+| Configuration | Model | LoRA rank | Epochs | Eval temp | Accuracy | Script |
+|---|---|---|---|---|---|---|
+| Base (no FT) | Qwen3-14B | — | — | 0.6 | 69.90% (on 103 samples) | `eval_base_14b.py` |
+| Base (no FT, greedy) | Qwen3-14B | — | — | 0 | *running…* | `eval_base_14b_greedy.py` |
+| Base (no FT) | Qwen3-8B | — | — | 0.6 | 62.26% (on 53 samples) | `eval_base_8b.py` |
+| Baseline FT | Qwen3-14B | r=16 | 2 | 0.6 | 68.18% ± 8.61% | `finetune_baseline.py` |
+| **Strong LoRA** | **Qwen3-14B** | **r=64** | **3** | **0** | **71.64% ± 5.90%** | **`finetune_strong_lora.py`** |
+| Answer-only | Qwen3-14B | r=16 | 2 | 0.6 | 70.18% ± 16.04% | `finetune_answer_only.py` |
+| 8B variant | Qwen3-8B | r=16 | 2 | 0.6 | 64.00% ± 9.73% | `finetune_8b.py` |
+| Strong LoRA ext. | Qwen3-14B | r=64 | 3 | 0 | 25.38% ± 12.62% | `finetune_strong_lora_extended.py` |
+| Final Answer Only | Qwen3-14B | r=64 | 3 | 0 | *running…* | `finetune_final_answer_only.py` |
 
 > **Best configuration**: Strong LoRA (r=64, 3 epochs, greedy decoding) — **+1.76 pp** over the baseline fine-tune with the lowest variance across folds.
 
@@ -179,6 +179,25 @@ The model collapsed to ~25%. Inspecting the outputs showed format pollution — 
 
 **Lesson**: Data quality and format consistency >> data quantity. 53 clean, consistently-formatted samples outperform 100 mixed-source ones by a massive margin.
 
+### Phase 8: Final Answer Only (In Progress)
+
+A colleague suggested a different approach: instead of teaching the model *how* to reason (which overwrites its native chain-of-thought), fine-tune it **only on the correct final answer** and let it figure out the reasoning on its own.
+
+This is fundamentally different from all previous variants:
+
+| | Strong LoRA | Answer-only (Variant C) | **Final Answer Only (new)** |
+|---|---|---|---|
+| Training content | `<think>{reasoning}</think>` + answer | `{reasoning}` + answer (flat text) | **answer ONLY** |
+| Reasoning in training | Our Claude-generated reasoning | Our Claude-generated reasoning | **None — model keeps its own** |
+| `enable_thinking` at train | True | False | True |
+| What model learns | Our reasoning + answer | Our reasoning as visible output | **Only the correct answer** |
+
+The hypothesis: by not overwriting the model's native `<think>` process, we might get better reasoning while still steering it toward correct results. The model already knows *how* to think — it just needs to know *what the right answer is*.
+
+Config: same as Strong LoRA (r=64, α=64, 3 epochs, lr=1e-5, greedy), 53 curated samples, 5-fold CV.
+
+**Results**: *pending — job submitted to RUCHE*
+
 ### Summary of All Experiments
 
 | # | Phase | Config | Dataset | Judge | Accuracy | Notes |
@@ -188,13 +207,15 @@ The model collapsed to ~25%. Inspecting the outputs showed format pollution — 
 | 3 | Judge swap | r=16, lr=1e-5 (Round 7) | 56 (5-fold) | **Claude** | **61.06% ± 13.14%** | Same outputs, new judge |
 | 4 | Dataset exp. | r=16, lr=1e-5, 10K tokens | 103 (5-fold) | Claude | 63.29% ± 8.26% | 56+30+17 samples |
 | 5 | Dataset exp. | r=16, lr=1e-5, 16K tokens | 103 (5-fold) | Claude | 67.05% ± 8.56% | Token limit matters |
-| — | Base 14B | No fine-tuning | 103 | Claude | 69.90% | FT not helping yet |
+| — | Base 14B | No fine-tuning, temp=0.6 | 103 | Claude | 69.90% | FT not helping yet |
+| — | Base 14B (greedy) | No fine-tuning, greedy | 53 | Claude | *pending* | Fair comparison to Strong LoRA |
 | — | Base 8B | No fine-tuning | 53 | Claude | 62.26% | Smaller model baseline |
 | 6 | Final | r=16, lr=1e-5, 2ep | 53 (5-fold) | Claude | 68.18% ± 8.61% | Baseline FT |
 | 7 | Final | **r=64, lr=1e-5, 3ep, greedy** | **53 (5-fold)** | **Claude** | **71.64% ± 5.90%** | **★ Best** |
 | 8 | Final | r=16, lr=2e-5, answer-only | 53 (5-fold) | Claude | 70.18% ± 16.04% | High variance |
 | 9 | Final | 8B, r=16, lr=1e-5, 2ep | 53 (5-fold) | Claude | 64.00% ± 9.73% | Too small |
 | 10 | Scaling | r=64, lr=1e-5, 3ep, greedy | 100 (5-fold) | Claude | 25.38% ± 12.62% | Catastrophic collapse |
+| 11 | Final ans. only | r=64, lr=1e-5, 3ep, greedy | 53 (5-fold) | Claude | *pending* | Answer only, no reasoning in training |
 
 ---
 
@@ -207,10 +228,12 @@ repo/
 │   ├── finetune_strong_lora.py       # Best config: r=64, 3 epochs, greedy
 │   ├── finetune_answer_only.py       # Variant C: no <think> in training
 │   ├── finetune_8b.py                # 8B model variant
-│   └── finetune_strong_lora_extended.py  # Extended dataset (100 samples)
+│   ├── finetune_strong_lora_extended.py  # Extended dataset (100 samples)
+│   └── finetune_final_answer_only.py # Answer only — no reasoning in training
 │
 ├── evaluation/                       # Evaluation scripts
-│   ├── eval_base_14b.py              # Base Qwen3-14B evaluation
+│   ├── eval_base_14b.py              # Base Qwen3-14B evaluation (temp=0.6)
+│   ├── eval_base_14b_greedy.py       # Base Qwen3-14B evaluation (greedy)
 │   ├── eval_base_8b.py               # Base Qwen3-8B evaluation
 │   ├── benchmark_models.py           # Multi-model benchmark (open-ended)
 │   └── benchmark_mcq.py              # MCQ benchmark on CRE Handbook
@@ -222,7 +245,9 @@ repo/
 │   ├── submit_8b.sh
 │   ├── submit_strong_lora_extended.sh
 │   ├── submit_eval_base_14b.sh
-│   └── submit_eval_base_8b.sh
+│   ├── submit_eval_base_14b_greedy.sh
+│   ├── submit_eval_base_8b.sh
+│   └── submit_final_answer_only.sh
 │
 ├── data/                             # Datasets (add your JSONL files here)
 │   └── .gitkeep
@@ -244,10 +269,6 @@ The training data comes from three sources:
 | **`cross_model_verified.jsonl`** | 30 | Data augmentation from `dataset_alex`, produced by a colleague using cross-model verification |
 | **`data2.jsonl`** | 17 | Exercises retrieved from a second textbook — different answer format (verbose multi-part vs. concise numerical) |
 | **`dataset_alex_extended`** | 100 | Union of the above three sources |
-
-The original extraction pipeline uses GPT-4o-mini to identify exercises from OCR-processed textbook chunks, rewrites them to be self-contained, then uses DeepSeek R1 to generate step-by-step reasoning with answer verification. Quality filters remove ghost questions, tautologies, and context-leaking entries.
-
-All final experiments use only `dataset_alex` (53 samples). The extended dataset (100 samples) was tested once and caused catastrophic performance collapse.
 
 ### Fine-Tuning
 
@@ -301,14 +322,15 @@ export OPENROUTER_API_KEY="your-key-here"
 
 Key hyperparameters are defined at the top of each training script. The main knobs:
 
-| Parameter | Baseline | Strong LoRA | Answer-only | 8B |
-|---|---|---|---|---|
-| `LORA_R` | 16 | 64 | 16 | 16 |
-| `LORA_ALPHA` | 16 | 64 | 16 | 16 |
-| `NUM_EPOCHS` | 2 | 3 | 2 | 2 |
-| `LEARNING_RATE` | 1e-5 | 1e-5 | 2e-5 | 1e-5 |
-| `EVAL_TEMPERATURE` | 0.6 | 0.0 | 0.6 | 0.6 |
-| Thinking in train | ✓ | ✓ | ✗ | ✓ |
+| Parameter | Baseline | Strong LoRA | Answer-only | 8B | Final Ans. Only |
+|---|---|---|---|---|---|
+| `LORA_R` | 16 | 64 | 16 | 16 | 64 |
+| `LORA_ALPHA` | 16 | 64 | 16 | 16 | 64 |
+| `NUM_EPOCHS` | 2 | 3 | 2 | 2 | 3 |
+| `LEARNING_RATE` | 1e-5 | 1e-5 | 2e-5 | 1e-5 | 1e-5 |
+| `EVAL_TEMPERATURE` | 0.6 | 0.0 | 0.6 | 0.6 | 0.0 |
+| Thinking in train | ✓ | ✓ | ✗ | ✓ | ✓ |
+| Reasoning in train data | ✓ | ✓ | ✓ (flat) | ✓ | ✗ |
 
 ## Models
 

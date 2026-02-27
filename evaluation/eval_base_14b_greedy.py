@@ -1,17 +1,20 @@
 """
-Base model evaluation: Qwen3-14B (no fine-tuning, no LoRA)
+Base model evaluation: Qwen3-14B — Greedy decoding (no fine-tuning)
 
-Evaluates the base Qwen3-14B model in 4-bit quantization on the full
-dataset without any fine-tuning. Provides the baseline accuracy to
-measure the impact of LoRA fine-tuning.
+Same as eval_base_14b.py but uses GREEDY DECODING (temp=0, do_sample=False)
+to match the Strong LoRA evaluation parameters exactly.
+
+This provides a fair apples-to-apples comparison: same model, same decoding
+strategy, only difference is whether LoRA adapters are present.
 
 Configuration:
     - Model: Qwen3-14B (4-bit quantized via Unsloth)
     - No LoRA adapters
-    - Eval: temp=0.6 sampling, 16K max tokens, native thinking
+    - Eval: greedy (temp=0), 16K max tokens, native thinking
+    - Max seq len: 8192 (same as Strong LoRA)
+    - System prompt: identical to Strong LoRA
     - Judge: Claude 3.5 Sonnet via OpenRouter
-
-Result: 66.50% (53 samples, single pass — no CV since no training)
+    - Dataset: dataset_reliability.jsonl (53 curated samples)
 """
 
 import os
@@ -31,29 +34,25 @@ from unsloth import FastLanguageModel
 
 MODEL_NAME = "unsloth/Qwen3-14B-unsloth-bnb-4bit"
 MAX_SEQ_LEN = 8192
-DATASET_PATH = "dataset_alex.json"
+DATASET_PATH = "dataset_reliability.jsonl"
 
 EVAL_THINKING_MODE = True
-EVAL_MAX_NEW_TOKENS = 16384
+EVAL_TEMPERATURE = 0.0          # Greedy — same as Strong LoRA
+EVAL_MAX_NEW_TOKENS = 16384     # Same as Strong LoRA
 
-JUDGE_API_KEY = os.environ["OPENROUTER_API_KEY"]
-JUDGE_BASE_URL = "https://openrouter.ai/api/v1"
 JUDGE_MODEL = "anthropic/claude-3.5-sonnet"
-
-client = OpenAI(
-    api_key=JUDGE_API_KEY,
-    base_url=JUDGE_BASE_URL,
-    default_headers={
-        "HTTP-Referer": "https://github.com/helloelora",
-        "X-Title": "Reliability-Eval",
-    },
-)
 
 SYSTEM_PROMPT = """You are a Reliability Engineering Expert.
 Solve the user's problem step-by-step with rigorous mathematical reasoning.
 Use LaTeX for mathematical formulas.
 Be concise: focus on the key calculation steps, avoid repeating the question or adding unnecessary preamble.
 Always conclude with a clearly stated final answer including numerical values and units when applicable."""
+
+# OpenRouter API
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+)
 
 
 # Answer extraction
@@ -104,7 +103,7 @@ def _truncate_repetitions(text, max_repeats=3):
 
 @torch.inference_mode()
 def generate_answer(model, tokenizer, question):
-    """Generate an answer using the base model with native thinking."""
+    """Generate an answer using greedy decoding (deterministic) — no LoRA."""
     FastLanguageModel.for_inference(model)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -115,12 +114,15 @@ def generate_answer(model, tokenizer, question):
         enable_thinking=EVAL_THINKING_MODE, return_tensors="pt",
     ).to("cuda")
 
+    # Greedy decoding — matches Strong LoRA eval parameters exactly
     gen_kwargs = dict(
-        max_new_tokens=EVAL_MAX_NEW_TOKENS, use_cache=True, do_sample=True,
-        temperature=0.6, top_p=0.95, top_k=20, min_p=0.0,
-        #temperature to change + check parameters
-        repetition_penalty=1.15, no_repeat_ngram_size=10,
+        max_new_tokens=EVAL_MAX_NEW_TOKENS,
+        use_cache=True,
+        do_sample=False,
+        repetition_penalty=1.15,
+        no_repeat_ngram_size=10,
     )
+
     outputs = model.generate(input_ids, **gen_kwargs)
     output_ids = outputs[0][input_ids.shape[1]:].tolist()
     raw = tokenizer.decode(output_ids, skip_special_tokens=False)
@@ -186,10 +188,10 @@ GRADING RULES:
             }
 
 
-# Main: evaluate all samples (no cross-validation)
+# Main: evaluate all samples (no cross-validation — no training involved)
 
 if __name__ == "__main__":
-    print(f"Loading base model: {MODEL_NAME} (NO LoRA)")
+    print(f"Loading base model: {MODEL_NAME} (NO LoRA, GREEDY DECODING)")
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=MODEL_NAME, max_seq_length=MAX_SEQ_LEN, load_in_4bit=True,
     )
@@ -198,17 +200,20 @@ if __name__ == "__main__":
     print(f"Loaded {len(full_dataset)} samples")
 
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = f"base_model_14b_results_{run_timestamp}.json"
+    results_file = f"base_model_14b_greedy_results_{run_timestamp}.json"
     n_samples = len(full_dataset)
 
     FastLanguageModel.for_inference(model)
     all_results, correct, token_counts = [], 0, []
 
-    for i in tqdm(range(n_samples), desc="Evaluating 14B base model"):
+    for i in tqdm(range(n_samples), desc="Evaluating 14B base model (greedy)"):
         sample = full_dataset[i]
         ans, n_tok, had_thinking, raw_response = generate_answer(model, tokenizer, sample["question"])
         judged = judge_single(sample, ans)
-        judged.update({"sample_index": i, "token_count": n_tok, "had_thinking": had_thinking, "raw_response": raw_response})
+        judged.update({
+            "sample_index": i, "token_count": n_tok,
+            "had_thinking": had_thinking, "raw_response": raw_response,
+        })
         all_results.append(judged)
         token_counts.append(n_tok)
         if judged["is_correct"]:
@@ -218,9 +223,14 @@ if __name__ == "__main__":
         if (i + 1) % 20 == 0 or (i + 1) == n_samples:
             json_results = {
                 "metadata": {
-                    "model": MODEL_NAME, "model_type": "base_model_14b_4bit",
+                    "model": MODEL_NAME,
+                    "model_type": "base_model_14b_4bit_greedy",
+                    "eval_temperature": EVAL_TEMPERATURE,
                     "eval_max_new_tokens": EVAL_MAX_NEW_TOKENS,
-                    "judge_model": JUDGE_MODEL, "total_samples": n_samples,
+                    "decoding": "greedy (do_sample=False)",
+                    "judge_model": JUDGE_MODEL,
+                    "dataset": DATASET_PATH,
+                    "total_samples": n_samples,
                     "timestamp": run_timestamp,
                 },
                 "summary": {
@@ -234,5 +244,5 @@ if __name__ == "__main__":
                 json.dump(json_results, f, indent=2, ensure_ascii=False)
 
     accuracy = correct / n_samples * 100
-    print(f"\n14B BASE MODEL: {accuracy:.2f}% ({correct}/{n_samples})")
+    print(f"\n14B BASE MODEL (GREEDY): {accuracy:.2f}% ({correct}/{n_samples})")
     print(f"Results saved to: {results_file}")
