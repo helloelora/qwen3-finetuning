@@ -13,16 +13,16 @@ All final experiments use **5-fold cross-validation** on a curated 53-sample dat
 | Configuration | Model | LoRA rank | Epochs | Eval temp | Accuracy | Script |
 |---|---|---|---|---|---|---|
 | Base (no FT) | Qwen3-14B | — | — | 0.6 | 69.90% (on 103 samples) | `eval_base_14b.py` |
-| Base (no FT, greedy) | Qwen3-14B | — | — | 0 | *running…* | `eval_base_14b_greedy.py` |
+| Base (no FT, greedy) | Qwen3-14B | — | — | 0 | **79.25%** (42/53) | `eval_base_14b_greedy.py` |
 | Base (no FT) | Qwen3-8B | — | — | 0.6 | 62.26% (on 53 samples) | `eval_base_8b.py` |
 | Baseline FT | Qwen3-14B | r=16 | 2 | 0.6 | 68.18% ± 8.61% | `finetune_baseline.py` |
 | **Strong LoRA** | **Qwen3-14B** | **r=64** | **3** | **0** | **71.64% ± 5.90%** | **`finetune_strong_lora.py`** |
 | Answer-only | Qwen3-14B | r=16 | 2 | 0.6 | 70.18% ± 16.04% | `finetune_answer_only.py` |
 | 8B variant | Qwen3-8B | r=16 | 2 | 0.6 | 64.00% ± 9.73% | `finetune_8b.py` |
 | Strong LoRA ext. | Qwen3-14B | r=64 | 3 | 0 | 25.38% ± 12.62% | `finetune_strong_lora_extended.py` |
-| Final Answer Only | Qwen3-14B | r=64 | 3 | 0 | *running…* | `finetune_final_answer_only.py` |
+| Final Answer Only | Qwen3-14B | r=64 | 3 | 0 | 52.73% ± 8.83% | `finetune_final_answer_only.py` |
 
-> **Best configuration**: Strong LoRA (r=64, 3 epochs, greedy decoding) — **+1.76 pp** over the baseline fine-tune with the lowest variance across folds.
+> **Best fine-tuned configuration**: Strong LoRA (r=64, 3 epochs, greedy decoding) — **71.64% ± 5.90%**. However, the **base model with greedy decoding scores 79.25%**, outperforming all fine-tuned variants by a significant margin. See Phase 8 for analysis.
 
 ### Per-Fold Breakdown
 
@@ -56,12 +56,21 @@ All final experiments use **5-fold cross-validation** on a curated 53-sample dat
 |---|---|---|---|---|---|
 | 19.05% (4/21) | 23.81% (5/21) | 19.05% (4/21) | 50.00% (10/20) | 15.00% (3/20) | **25.38% ± 12.62%** |
 
+**Final Answer Only** (14B, r=64, α=64, 3 epochs, lr=1e-5, greedy, answer-only training, 53 samples):
+
+| Fold 1 | Fold 2 | Fold 3 | Fold 4 | Fold 5 | Mean |
+|---|---|---|---|---|---|
+| 45.45% (5/11) | 54.55% (6/11) | 63.64% (7/11) | 40.00% (4/10) | 60.00% (6/10) | **52.73% ± 8.83%** |
+
 ### Key Takeaways
 
-- **Strong LoRA is the best config** — highest mean accuracy with the lowest standard deviation, meaning it's both more accurate and more consistent.
+- **The base model (greedy) outperforms all fine-tuned variants** — 79.25% vs. 71.64% for the best fine-tune (Strong LoRA). This is the single most important finding of the project.
+- **Strong LoRA is the best fine-tuned config** — highest mean accuracy with the lowest standard deviation among fine-tuned models.
 - **Answer-only** reaches similar mean accuracy but has extreme fold variance (54% to 100%), making it unreliable.
 - **8B is too small** — the 8B model underperforms even the base 14B, confirming that model capacity matters for this domain.
+- **Final Answer Only was a disaster** — 52.73%, far below even the baseline FT. Training only on the final answer (no reasoning) destroyed the model's ability to produce correct outputs. The hypothesis that "preserving native reasoning while teaching only answers" would help was wrong — the model needs consistent reasoning examples to learn the domain, not just answers.
 - **Scaling the dataset destroyed performance** — going from 53 curated → 100 samples (53 original + 30 augmented + 17 from a different textbook) caused catastrophic collapse from 71.64% to 25.38%. The additional samples — particularly the 17 from a second textbook with a different answer format — likely introduced format pollution that degraded the model's output structure.
+- **Fine-tuning may not help for this domain with small data** — The base 14B greedy (79.25%) beats every fine-tuned model. This suggests that Qwen3-14B already has strong reliability engineering knowledge, and fine-tuning on only 53 samples introduces more noise than signal. The model's pre-training knowledge is more valuable than our small-scale domain adaptation.
 
 ---
 
@@ -179,7 +188,7 @@ The model collapsed to ~25%. Inspecting the outputs showed format pollution — 
 
 **Lesson**: Data quality and format consistency >> data quantity. 53 clean, consistently-formatted samples outperform 100 mixed-source ones by a massive margin.
 
-### Phase 8: Final Answer Only (In Progress)
+### Phase 8: Final Answer Only & Base Greedy Evaluation
 
 A colleague suggested a different approach: instead of teaching the model *how* to reason (which overwrites its native chain-of-thought), fine-tune it **only on the correct final answer** and let it figure out the reasoning on its own.
 
@@ -196,7 +205,28 @@ The hypothesis: by not overwriting the model's native `<think>` process, we migh
 
 Config: same as Strong LoRA (r=64, α=64, 3 epochs, lr=1e-5, greedy), 53 curated samples, 5-fold CV.
 
-**Results**: *pending — job submitted to RUCHE*
+**Results — Final Answer Only**: **52.73% ± 8.83%**
+
+| Fold 1 | Fold 2 | Fold 3 | Fold 4 | Fold 5 | Mean |
+|---|---|---|---|---|---|
+| 45.45% | 54.55% | 63.64% | 40.00% | 60.00% | **52.73% ± 8.83%** |
+
+The hypothesis was **decisively wrong**. Training only on the final answer without any reasoning examples caused the model to lose its ability to solve reliability problems correctly. The model's native `<think>` reasoning, while preserved, was not steered in any useful direction — it produced long but ultimately incorrect chains of thought. The model needs consistent worked examples to learn domain-specific reasoning patterns, not just the final answer.
+
+**Results — Base 14B Greedy**: **79.25%** (42/53 correct)
+
+As a fair comparison to Strong LoRA (which uses greedy decoding), we also evaluated the **base Qwen3-14B with greedy decoding** on the same 53 samples — no fine-tuning at all.
+
+This is the most striking result of the entire project: **the base model with greedy decoding outperforms every fine-tuned variant by a wide margin** (+7.61 pp over Strong LoRA, +11.07 pp over Baseline FT). Greedy decoding (temperature=0) alone is worth ~10 pp compared to the previous base evaluation at temp=0.6 (69.90% on 103 samples).
+
+#### Why Fine-Tuning Didn't Help
+
+Several factors likely explain this:
+
+1. **Dataset size**: 53 samples is extremely small for fine-tuning a 14B-parameter model. The LoRA adapters may be fitting noise rather than learning generalizable domain knowledge.
+2. **Pre-training quality**: Qwen3-14B was already trained on massive corpora that include textbook-level mathematics and engineering content. Our 53-sample fine-tune cannot compete with that pre-existing knowledge.
+3. **Catastrophic forgetting**: Even with LoRA (which freezes most weights), fine-tuning on domain-specific examples may have slightly degraded the model's general problem-solving abilities.
+4. **Decoding strategy matters more than fine-tuning**: The jump from temp=0.6 (69.90%) to greedy (79.25%) on the base model suggests that deterministic decoding is crucial for mathematical reasoning, and this alone closes most of the gap.
 
 ### Summary of All Experiments
 
@@ -208,14 +238,14 @@ Config: same as Strong LoRA (r=64, α=64, 3 epochs, lr=1e-5, greedy), 53 curated
 | 4 | Dataset exp. | r=16, lr=1e-5, 10K tokens | 103 (5-fold) | Claude | 63.29% ± 8.26% | 56+30+17 samples |
 | 5 | Dataset exp. | r=16, lr=1e-5, 16K tokens | 103 (5-fold) | Claude | 67.05% ± 8.56% | Token limit matters |
 | — | Base 14B | No fine-tuning, temp=0.6 | 103 | Claude | 69.90% | FT not helping yet |
-| — | Base 14B (greedy) | No fine-tuning, greedy | 53 | Claude | *pending* | Fair comparison to Strong LoRA |
+| — | Base 14B (greedy) | No fine-tuning, greedy | 53 | Claude | **79.25%** | ★ Highest overall |
 | — | Base 8B | No fine-tuning | 53 | Claude | 62.26% | Smaller model baseline |
 | 6 | Final | r=16, lr=1e-5, 2ep | 53 (5-fold) | Claude | 68.18% ± 8.61% | Baseline FT |
 | 7 | Final | **r=64, lr=1e-5, 3ep, greedy** | **53 (5-fold)** | **Claude** | **71.64% ± 5.90%** | **★ Best** |
 | 8 | Final | r=16, lr=2e-5, answer-only | 53 (5-fold) | Claude | 70.18% ± 16.04% | High variance |
 | 9 | Final | 8B, r=16, lr=1e-5, 2ep | 53 (5-fold) | Claude | 64.00% ± 9.73% | Too small |
 | 10 | Scaling | r=64, lr=1e-5, 3ep, greedy | 100 (5-fold) | Claude | 25.38% ± 12.62% | Catastrophic collapse |
-| 11 | Final ans. only | r=64, lr=1e-5, 3ep, greedy | 53 (5-fold) | Claude | *pending* | Answer only, no reasoning in training |
+| 11 | Final ans. only | r=64, lr=1e-5, 3ep, greedy | 53 (5-fold) | Claude | 52.73% ± 8.83% | Hypothesis disproved |
 
 ---
 
