@@ -20,7 +20,7 @@ All final experiments use **5-fold cross-validation** on a curated 53-sample dat
 | Answer-only | Qwen3-14B | r=16 | 2 | 0.6 | 70.18% ± 16.04% | `finetune_answer_only.py` |
 | 8B variant | Qwen3-8B | r=16 | 2 | 0.6 | 64.00% ± 9.73% | `finetune_8b.py` |
 | Strong LoRA ext. | Qwen3-14B | r=64 | 3 | 0 | 25.38% ± 12.62% | `finetune_strong_lora_extended.py` |
-| Final Answer Only | Qwen3-14B | r=64 | 3 | 0 | 52.73% ± 8.83% | `finetune_final_answer_only.py` |
+| Final Answer Only | Qwen3-14B | r=64 | 3 | 0 | 60.55% ± 5.85% | `finetune_final_answer_only.py` |
 
 > **Best fine-tuned configuration**: Strong LoRA (r=64, 3 epochs, greedy decoding) — **71.64% ± 5.90%**. However, the **base model with greedy decoding scores 79.25%**, outperforming all fine-tuned variants by a significant margin. See Phase 8 for analysis.
 
@@ -60,7 +60,7 @@ All final experiments use **5-fold cross-validation** on a curated 53-sample dat
 
 | Fold 1 | Fold 2 | Fold 3 | Fold 4 | Fold 5 | Mean |
 |---|---|---|---|---|---|
-| 45.45% (5/11) | 54.55% (6/11) | 63.64% (7/11) | 40.00% (4/10) | 60.00% (6/10) | **52.73% ± 8.83%** |
+| 54.55% (6/11) | 54.55% (6/11) | 63.64% (7/11) | 60.00% (6/10) | 70.00% (7/10) | **60.55% ± 5.85%** |
 
 ### Key Takeaways
 
@@ -68,7 +68,7 @@ All final experiments use **5-fold cross-validation** on a curated 53-sample dat
 - **Strong LoRA is the best fine-tuned config** — highest mean accuracy with the lowest standard deviation among fine-tuned models.
 - **Answer-only** reaches similar mean accuracy but has extreme fold variance (54% to 100%), making it unreliable.
 - **8B is too small** — the 8B model underperforms even the base 14B, confirming that model capacity matters for this domain.
-- **Final Answer Only was a disaster** — 52.73%, far below even the baseline FT. Training only on the final answer (no reasoning) destroyed the model's ability to produce correct outputs. The hypothesis that "preserving native reasoning while teaching only answers" would help was wrong — the model needs consistent reasoning examples to learn the domain, not just answers.
+- **Final Answer Only underperformed** — 60.55%, below both the base model (79.25%) and Strong LoRA (71.64%). Training only on the final answer, while preserving the model's native `<think>` reasoning, was not enough to steer the model toward correct domain-specific solutions. The model needs consistent worked examples, not just answers.
 - **Scaling the dataset destroyed performance** — going from 53 curated → 100 samples (53 original + 30 augmented + 17 from a different textbook) caused catastrophic collapse from 71.64% to 25.38%. The additional samples — particularly the 17 from a second textbook with a different answer format — likely introduced format pollution that degraded the model's output structure.
 - **Fine-tuning may not help for this domain with small data** — The base 14B greedy (79.25%) beats every fine-tuned model. This suggests that Qwen3-14B already has strong reliability engineering knowledge, and fine-tuning on only 53 samples introduces more noise than signal. The model's pre-training knowledge is more valuable than our small-scale domain adaptation.
 
@@ -205,13 +205,13 @@ The hypothesis: by not overwriting the model's native `<think>` process, we migh
 
 Config: same as Strong LoRA (r=64, α=64, 3 epochs, lr=1e-5, greedy), 53 curated samples, 5-fold CV.
 
-**Results — Final Answer Only**: **52.73% ± 8.83%**
+**Results — Final Answer Only**: **60.55% ± 5.85%**
 
 | Fold 1 | Fold 2 | Fold 3 | Fold 4 | Fold 5 | Mean |
 |---|---|---|---|---|---|
-| 45.45% | 54.55% | 63.64% | 40.00% | 60.00% | **52.73% ± 8.83%** |
+| 54.55% | 54.55% | 63.64% | 60.00% | 70.00% | **60.55% ± 5.85%** |
 
-The hypothesis was **decisively wrong**. Training only on the final answer without any reasoning examples caused the model to lose its ability to solve reliability problems correctly. The model's native `<think>` reasoning, while preserved, was not steered in any useful direction — it produced long but ultimately incorrect chains of thought. The model needs consistent worked examples to learn domain-specific reasoning patterns, not just the final answer.
+The hypothesis was **not validated**. Training only on the final answer (preserving the model's native `<think>` reasoning) performed significantly below the base model (79.25%) and below Strong LoRA (71.64%). While the model's native reasoning was preserved, it was not steered in any useful direction — the model needs consistent worked examples to learn domain-specific reasoning patterns, not just the final answer. An earlier run with a smaller token budget (MAX_SEQ_LEN=4096, EVAL_MAX_NEW_TOKENS=8192) scored only 52.73% due to truncation; after fixing to 8192/16384 (matching Strong LoRA), accuracy improved to 60.55% but still fell well short.
 
 **Results — Base 14B Greedy**: **79.25%** (42/53 correct)
 
@@ -245,7 +245,7 @@ Several factors likely explain this:
 | 8 | Final | r=16, lr=2e-5, answer-only | 53 (5-fold) | Claude | 70.18% ± 16.04% | High variance |
 | 9 | Final | 8B, r=16, lr=1e-5, 2ep | 53 (5-fold) | Claude | 64.00% ± 9.73% | Too small |
 | 10 | Scaling | r=64, lr=1e-5, 3ep, greedy | 100 (5-fold) | Claude | 25.38% ± 12.62% | Catastrophic collapse |
-| 11 | Final ans. only | r=64, lr=1e-5, 3ep, greedy | 53 (5-fold) | Claude | 52.73% ± 8.83% | Hypothesis disproved |
+| 11 | Final ans. only | r=64, lr=1e-5, 3ep, greedy | 53 (5-fold) | Claude | 60.55% ± 5.85% | Hypothesis not validated |
 
 ---
 
@@ -259,7 +259,8 @@ repo/
 │   ├── finetune_answer_only.py       # Variant C: no <think> in training
 │   ├── finetune_8b.py                # 8B model variant
 │   ├── finetune_strong_lora_extended.py  # Extended dataset (100 samples)
-│   └── finetune_final_answer_only.py # Answer only — no reasoning in training
+│   ├── finetune_final_answer_only.py # Answer only — no reasoning in training
+│   └── finetune_low_rank.py          # Low rank: r=16, α=32, 1 epoch, greedy
 │
 ├── evaluation/                       # Evaluation scripts
 │   ├── eval_base_14b.py              # Base Qwen3-14B evaluation (temp=0.6)
@@ -277,7 +278,8 @@ repo/
 │   ├── submit_eval_base_14b.sh
 │   ├── submit_eval_base_14b_greedy.sh
 │   ├── submit_eval_base_8b.sh
-│   └── submit_final_answer_only.sh
+│   ├── submit_final_answer_only.sh
+│   └── submit_low_rank.sh
 │
 ├── data/                             # Datasets (add your JSONL files here)
 │   └── .gitkeep
@@ -352,21 +354,140 @@ export OPENROUTER_API_KEY="your-key-here"
 
 Key hyperparameters are defined at the top of each training script. The main knobs:
 
-| Parameter | Baseline | Strong LoRA | Answer-only | 8B | Final Ans. Only |
-|---|---|---|---|---|---|
-| `LORA_R` | 16 | 64 | 16 | 16 | 64 |
-| `LORA_ALPHA` | 16 | 64 | 16 | 16 | 64 |
-| `NUM_EPOCHS` | 2 | 3 | 2 | 2 | 3 |
-| `LEARNING_RATE` | 1e-5 | 1e-5 | 2e-5 | 1e-5 | 1e-5 |
-| `EVAL_TEMPERATURE` | 0.6 | 0.0 | 0.6 | 0.6 | 0.0 |
-| Thinking in train | ✓ | ✓ | ✗ | ✓ | ✓ |
-| Reasoning in train data | ✓ | ✓ | ✓ (flat) | ✓ | ✗ |
+| Parameter | Baseline | Strong LoRA | Answer-only | 8B | Final Ans. Only | Low Rank |
+|---|---|---|---|---|---|---|
+| `LORA_R` | 16 | 64 | 16 | 16 | 64 | 16 |
+| `LORA_ALPHA` | 16 | 64 | 16 | 16 | 64 | 32 |
+| `NUM_EPOCHS` | 2 | 3 | 2 | 2 | 3 | 1 |
+| `LEARNING_RATE` | 1e-5 | 1e-5 | 2e-5 | 1e-5 | 1e-5 | 1e-5 |
+| `EVAL_TEMPERATURE` | 0.6 | 0.0 | 0.6 | 0.6 | 0.0 | 0.0 |
+| Thinking in train | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
+| Reasoning in train data | ✓ | ✓ | ✓ (flat) | ✓ | ✗ | ✓ |
 
 ## Models
 
 - **Fine-tuned**: `unsloth/Qwen3-14B-unsloth-bnb-4bit`, `unsloth/Qwen3-8B-unsloth-bnb-4bit`
 - **Data generation**: `openai/gpt-4o-mini` (extraction/augmentation), `deepseek/deepseek-r1` (solving)
 - **LLM judge**: `anthropic/claude-sonnet-4-20250514` via OpenRouter
+
+---
+
+## Part 3 — Error Analysis: why fine-tuning underperforms the base model
+
+To understand *where* and *why* fine-tuning hurts, we performed a per-question comparison across three configurations on the same 53 questions:
+
+- **Base (no FT, greedy)**: 79.25% (42/53)
+- **Strong LoRA** (r=64, 3 epochs, greedy, 5-fold CV): 71.64% ± 5.90% (~38/53)
+- **Final Answer Only** (r=64, 3 epochs, greedy, answer-only training, 5-fold CV): 60.55% ± 5.85% (~32/53)
+
+### Base vs. Strong LoRA — Question-level comparison
+
+| Outcome | Count | % |
+|---|---|---|
+| Both correct | 34 | 64.2% |
+| Both wrong | 8 | 15.1% |
+| Base ✓, LoRA ✗ (regressions) | 7 | 13.2% |
+| Base ✗, LoRA ✓ (improvements) | 3 | 5.7% |
+| **Agreement rate** | **42/53** | **80.8%** |
+
+Fine-tuning caused **7 regressions** but only **3 improvements** — a net loss of 4 questions. The regressions include Weibull/lognormal distribution problems and sample size computations where the base model's pre-trained knowledge was already sufficient. The 3 questions where LoRA improved over the base tend to involve more domain-specific setups (code inspection bugs, two-box systems, airplane engine redundancy).
+
+**Interpretation**: Strong LoRA mostly preserves the base model's knowledge (34 shared correct), but the 53-sample fine-tune introduces enough noise to flip ~13% of questions from correct → wrong while only recovering ~6% in the other direction.
+
+### Base vs. Final Answer Only — question-level comparison
+
+| Outcome | Count | % |
+|---|---|---|
+| Both correct | 30 | 56.6% |
+| Both wrong | 9 | 17.0% |
+| Base ✓, FAO ✗ (regressions) | 11 | 20.8% |
+| Base ✗, FAO ✓ (improvements) | 2 | 3.8% |
+| **Agreement rate** | **39/53** | **75.0%** |
+
+Final Answer Only caused **11 regressions** but only **2 improvements** — a net loss of 9 questions. This is significantly worse than Strong LoRA's net loss of 4, confirming that training only on the final answer (without reasoning examples) damages the model's problem-solving ability more severely.
+
+### Strong LoRA vs. Final Answer Only
+
+| Outcome | Count | % |
+|---|---|---|
+| Both correct | 27 | 50.9% |
+| Both wrong | 10 | 18.9% |
+| LoRA ✓, FAO ✗ | 10 | 18.9% |
+| LoRA ✗, FAO ✓ | 5 | 9.4% |
+| **Agreement rate** | **37/53** | **71.2%** |
+
+Final Answer Only loses 10 questions that Strong LoRA gets right, while gaining only 5. Providing worked reasoning examples during training (Strong LoRA) is clearly better than providing only the final answer.
+
+### Exclusive correctness — Who gets what right?
+
+| Category | Count | Questions |
+|---|---|---|
+| All three correct | **25** | Core of shared competence |
+| All three wrong | **8** | Hardest questions (see below) |
+| Only Base right (both FTs wrong) | 2 | LTPD sample size, lot sampling acceptance |
+| Only Strong LoRA right | 1 | Code inspection defect estimation |
+| Only Final Answer Only right | 0 | — |
+| Base + LoRA right, FAO wrong | 9 | FAO-specific regressions |
+| Base + FAO right, LoRA wrong | 5 | LoRA-specific regressions |
+| LoRA + FAO right, Base wrong | 2 | Rare fine-tuning improvements |
+
+**Key finding**: There are **zero questions that only FAO gets right** — every question FAO solves is also solved by at least one other model. Meanwhile, the base model has 2 exclusive wins and shares correctness with at least one fine-tune on 40 of 42 questions it gets right.
+
+### The 8 hardest questions (all 3 models failed)
+
+These questions defeated every configuration:
+
+1. Sample size for MTTF confidence interval (chi-square table lookup)
+2. Straight-line regression / least-squares fit
+3. Defect model likelihood for interval-censored data
+4. Identifying CDF vs. PDF vs. hazard function from formulas
+5. 300-unit test plan at 80% confidence level
+6. AQL/LTPD field failure rate with 50 FIT target
+7. Lot acceptance with 3 failures observed on 300 devices
+8. Two vendor groups of 50 components — comparison test
+
+These are predominantly **sample size/testing plan** and **statistical inference** problems requiring multi-step table lookups (chi-square, binomial) or likelihood derivations — tasks that rely on precise numerical computation rather than conceptual understanding.
+
+### Token length analysis
+
+| Model | Correct (mean tokens) | Wrong (mean tokens) | Ratio |
+|---|---|---|---|
+| Base | ~4,986 | ~9,336 | 1.87× |
+| Strong LoRA | ~5,195 | ~7,255 | 1.40× |
+| Final Answer Only | ~5,379 | ~8,517 | 1.58× |
+
+Wrong answers are consistently **40–90% longer** than correct ones across all models. The models "struggle" on harder questions by generating longer, more meandering reasoning chains that ultimately reach incorrect conclusions. This pattern is strongest for the base model (1.87× ratio), suggesting that when the base model is wrong, it is thoroughly confused and produces very long outputs.
+
+### Performance by topic category
+
+| Topic | # Qs | Base | Strong LoRA | Final Ans. Only |
+|---|---|---|---|---|
+| Lognormal distributions | 5 | **100%** | 80% | 80% |
+| Weibull distributions | 16 | **88%** | 69% | 63% |
+| Electronic components | 13 | **85%** | 69% | 62% |
+| Other distributions | 7 | 86% | 71% | 57% |
+| Probability / Bayes | 19 | 79% | 74% | 68% |
+| Exponential distributions | 19 | 74% | 68% | 47% |
+| Poisson process | 5 | 60% | **80%** | 40% |
+| **Sample size / testing** | **12** | **50%** | **33%** | **17%** |
+
+**Observations**:
+- The base model dominates in every category except **Poisson process**, where Strong LoRA scores 80% vs. 60% — the only topic where fine-tuning clearly helped.
+- **Sample size/testing** is the hardest category across the board (50% → 33% → 17%), confirming these questions require precise table lookups that LLMs struggle with.
+- Final Answer Only degrades most severely on **exponential distributions** (74% → 47%, a 27 pp drop) — a core reliability engineering topic, suggesting the model lost domain-specific reasoning patterns.
+- The gap between Base and fine-tuned models is smallest on **Probability/Bayes** (79% vs. 74%/68%) — more general-purpose math where pre-training knowledge is robust.
+
+### Summary of findings
+
+The per-question analysis reveals that fine-tuning's failure is not uniform — it's a **net negative trade-off**:
+
+1. **Strong LoRA** preserves 81% of the base model's decisions. It gains 3 domain-specific questions but loses 7 others, mostly standard distribution problems where the base model's pre-training was already sufficient. The 53-sample training set introduces mild noise that flips some correct answers without compensating enough elsewhere.
+
+2. **Final Answer Only** preserves only 75% agreement with the base model. It gains just 2 questions while losing 11 — the worst trade-off of any variant. Without worked reasoning examples, the model's native `<think>` process is unguided and frequently goes astray on domain-specific computations.
+
+3. **Topic-wise**, fine-tuning only helps on **Poisson process** questions (Strong LoRA: +20 pp). For every other topic, the base model is equal or better. This suggests the 53-sample dataset happens to contain enough Poisson examples to teach the model something new, but not enough of other topics to overcome the noise introduced by small-data fine-tuning.
+
+4. **The 8 universally-hard questions** (sample size, likelihood, table lookups) represent a ceiling that no configuration can break — these likely require tool use (calculator, statistical tables) rather than pure language model reasoning.
 
 ## License
 
